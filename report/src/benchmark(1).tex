@@ -1,0 +1,133 @@
+\section{Результаты тестирования}
+
+\subsection{Пример работы программы}
+
+Программа была скомпилирована и протестирована на ОС Linux. Ниже приведен пример её работы:
+
+\begin{verbatim}
+$ ./parent
+Enter a string: hello world from test
+Final output: HELLO_WORLD_FROM_TEST
+\end{verbatim}
+
+\subsection{Пошаговое описание работы}
+
+\begin{enumerate}
+    \item \textbf{Инициализация:} Родительский процесс создает разделяемую память и семафоры, создает и отображает файл \texttt{data\_to\_process.txt}
+    
+    \item \textbf{Ввод данных:} Пользователь вводит строку "hello world from test"
+    
+    \item \textbf{Создание дочерних процессов:} Родительский процесс создает два дочерних процесса с помощью \texttt{fork()} и \texttt{execl()}
+    
+    \item \textbf{Запуск первого процесса:} Родительский процесс освобождает \texttt{sem\_child}, разрешая первому дочернему процессу начать работу
+    
+    \item \textbf{Обработка первым процессом:} Первый дочерний процесс (\texttt{child1}):
+    \begin{itemize}
+        \item Захватывает семафоры \texttt{sem\_child} и \texttt{sem\_file}
+        \item Отображает файл в память
+        \item Преобразует строку в верхний регистр: "hello world from test" $\rightarrow$ "HELLO WORLD FROM TEST"
+        \item Освобождает семафоры и сигнализирует второму процессу
+    \end{itemize}
+    
+    \item \textbf{Обработка вторым процессом:} Второй дочерний процесс (\texttt{child2}):
+    \begin{itemize}
+        \item Захватывает семафоры \texttt{sem\_child} и \texttt{sem\_file}
+        \item Отображает файл в память
+        \item Заменяет пробелы на подчеркивания: "HELLO WORLD FROM TEST" $\rightarrow$ "HELLO\_WORLD\_FROM\_TEST"
+        \item Освобождает семафоры и сигнализирует родительскому процессу
+    \end{itemize}
+    
+    \item \textbf{Вывод результата:} Родительский процесс выводит итоговый результат обработки
+    
+    \item \textbf{Очистка ресурсов:} Родительский процесс удаляет файл, семафоры и разделяемую память
+\end{enumerate}
+
+\subsection{Тестовые примеры}
+
+\subsubsection{Тест 1: Простая строка}
+\begin{verbatim}
+Вход: "hello world"
+Выход: "HELLO_WORLD"
+\end{verbatim}
+
+\subsubsection{Тест 2: Строка с несколькими пробелами}
+\begin{verbatim}
+Вход: "this   is   a   test"
+Выход: "THIS___IS___A___TEST"
+\end{verbatim}
+
+\subsubsection{Тест 3: Смешанный регистр}
+\begin{verbatim}
+Вход: "HeLLo WoRLd"
+Выход: "HELLO_WORLD"
+\end{verbatim}
+
+\subsubsection{Тест 4: Строка с цифрами и символами}
+\begin{verbatim}
+Вход: "test123 program!"
+Выход: "TEST123_PROGRAM!"
+\end{verbatim}
+
+\subsection{Анализ использованных системных вызовов}
+
+В программе используются следующие системные вызовы POSIX:
+
+\textbf{Работа с разделяемой памятью:}
+\begin{itemize}
+    \item \texttt{shm\_open()} -- создание/открытие объекта разделяемой памяти
+    \item \texttt{shm\_unlink()} -- удаление объекта разделяемой памяти
+    \item \texttt{ftruncate()} -- установка размера объекта
+    \item \texttt{mmap()} -- отображение памяти в адресное пространство процесса
+    \item \texttt{munmap()} -- отмена отображения памяти
+\end{itemize}
+
+\textbf{Работа с семафорами:}
+\begin{itemize}
+    \item \texttt{sem\_open()} -- создание/открытие именованного семафора
+    \item \texttt{sem\_close()} -- закрытие семафора
+    \item \texttt{sem\_unlink()} -- удаление именованного семафора
+    \item \texttt{sem\_wait()} -- блокировка на семафоре
+    \item \texttt{sem\_post()} -- разблокировка семафора
+\end{itemize}
+
+\textbf{Работа с процессами:}
+\begin{itemize}
+    \item \texttt{fork()} -- создание дочернего процесса
+    \item \texttt{execl()} -- запуск новой программы в процессе
+    \item \texttt{waitpid()} -- ожидание завершения дочернего процесса
+\end{itemize}
+
+\textbf{Работа с файлами:}
+\begin{itemize}
+    \item \texttt{open()} -- открытие файла
+    \item \texttt{close()} -- закрытие файлового дескриптора
+    \item \texttt{unlink()} -- удаление файла
+    \item \texttt{read()} -- чтение из stdin
+    \item \texttt{write()} -- запись в stdout
+\end{itemize}
+
+\textbf{Системные вызовы, используемые в программе:}
+\begin{itemize}
+    \item \texttt{shm\_open()}, \texttt{shm\_unlink()} - создание/удаление объекта разделяемой памяти "/shared"
+    \item \texttt{mmap()}, \texttt{munmap()} - отображение/отмена отображения памяти и файлов
+    \item \texttt{sem\_open()}, \texttt{sem\_close()}, \texttt{sem\_unlink()} - работа с именованными семафорами
+    \item \texttt{sem\_wait()}, \texttt{sem\_post()} - операции синхронизации
+    \item \texttt{fork()} - создание дочернего процесса
+    \item \texttt{execl()} - замена образа процесса
+    \item \texttt{open()}, \texttt{close()}, \texttt{ftruncate()} - работа с файлом data\_to\_process.txt
+    \item \texttt{waitpid()} - ожидание завершения дочерних процессов
+    \item \texttt{read()}, \texttt{write()} - ввод/вывод данных
+    \item \texttt{unlink()} - удаление файла
+\end{itemize}
+
+\subsection{Особенности синхронизации}
+
+Программа демонстрирует корректную работу механизма синхронизации с помощью семафоров:
+
+\begin{itemize}
+    \item Семафор \texttt{sem\_file} (инициализирован единицей) работает как мьютекс, предотвращая одновременный доступ к файлу
+    
+    \item Семафоры \texttt{sem\_child} и \texttt{sem\_parent} (инициализированы нулем) обеспечивают правильный порядок выполнения: сначала child1, затем child2, затем parent
+    
+    \item Использование memory-mapped файла позволяет дочерним процессам видеть изменения, сделанные друг другом, в реальном времени
+\end{itemize}

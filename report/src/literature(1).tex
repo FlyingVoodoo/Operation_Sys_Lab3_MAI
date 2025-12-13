@@ -1,0 +1,332 @@
+\section{Листинг программы}
+
+\subsection{Заголовочные файлы}
+
+\subsubsection{shared\_data.hpp - структура данных для разделяемой памяти}
+\begin{lstlisting}[language=C++]
+#pragma once
+
+#include <semaphore.h>
+
+struct SharedData {
+    int number;
+    int signal;
+    char file[256];
+    sem_t* sem_parent;
+    sem_t* sem_child;
+    sem_t* sem_file;
+};
+\end{lstlisting}
+
+\subsubsection{os.hpp - интерфейсы функций для работы с ОС}
+\begin{lstlisting}[language=C++]
+#pragma once
+
+#include <semaphore.h>
+#include <sys/types.h>
+#include <cstddef>
+
+#include "shared_data.hpp"
+
+enum ProcessRole { IS_PARENT, IS_CHILD };
+
+SharedData* CreateSharedMemory();
+SharedData* OpenSharedMemory();
+void DestroySharedMemory(SharedData* data);
+
+ProcessRole ProcessCreate();
+void ProcessExecute(const char* program, const char* arg);
+pid_t ProcessWait(pid_t pid);
+
+void SemaphorePost(sem_t* sem);
+void SemaphoreWait(sem_t* sem);
+
+char* MapFileContent(const char* filename, size_t size, int flags);
+\end{lstlisting}
+
+\subsection{Реализация вспомогательных функций}
+
+\subsubsection{os.cpp - реализация функций для работы с ОС}
+\begin{lstlisting}[language=C++, basicstyle=\ttfamily\footnotesize]
+#include <iostream>
+#include <cstdlib>
+#include <cstdio>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <semaphore.h>
+#include <cstring>
+#include <sys/wait.h>
+
+#include "os.hpp"
+
+SharedData* CreateSharedMemory() {
+    shm_unlink("/shared");
+    int shm_fd = shm_open("/shared", O_CREAT | O_RDWR, 0666);
+    if (shm_fd == -1) { perror("shm_open"); exit(1); }
+    ftruncate(shm_fd, sizeof(SharedData));
+    SharedData* data = (SharedData*)mmap(NULL, sizeof(SharedData), 
+                       PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if (data == MAP_FAILED) { perror("mmap"); exit(1); }
+    close(shm_fd);
+
+    sem_unlink("/sem_file");
+    sem_unlink("/sem_parent");
+    sem_unlink("/sem_child");
+    
+    data->sem_file = sem_open("/sem_file", O_CREAT, 0666, 1);
+    data->sem_parent = sem_open("/sem_parent", O_CREAT, 0666, 0);
+    data->sem_child = sem_open("/sem_child", O_CREAT, 0666, 0);
+    
+    if (data->sem_file == SEM_FAILED || 
+        data->sem_parent == SEM_FAILED || 
+        data->sem_child == SEM_FAILED) {
+        perror("sem_open");
+        exit(1);
+    }
+
+    return data;
+}
+
+SharedData* OpenSharedMemory() {
+    int shm_fd = shm_open("/shared", O_RDWR, 0);
+    if (shm_fd == -1) { perror("shm_open"); exit(1); }
+    SharedData* data = (SharedData*)mmap(NULL, sizeof(SharedData), 
+                       PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if (data == MAP_FAILED) { perror("mmap"); exit(1); }
+    close(shm_fd);
+    
+    data->sem_file = sem_open("/sem_file", 0);
+    data->sem_parent = sem_open("/sem_parent", 0);
+    data->sem_child = sem_open("/sem_child", 0);
+    
+    if (data->sem_file == SEM_FAILED || 
+        data->sem_parent == SEM_FAILED || 
+        data->sem_child == SEM_FAILED) {
+        perror("sem_open in OpenSharedMemory");
+        exit(1);
+    }
+    
+    return data;
+}
+
+void DestroySharedMemory(SharedData* data) {
+    sem_close(data->sem_file);
+    sem_close(data->sem_parent);
+    sem_close(data->sem_child);
+    
+    sem_unlink("/sem_file");
+    sem_unlink("/sem_parent");
+    sem_unlink("/sem_child");
+    
+    munmap(data, sizeof(SharedData));
+    shm_unlink("/shared");
+}
+
+ProcessRole ProcessCreate() {
+    pid_t pid = fork();
+    if (pid == -1) { 
+        std::cout << "Ошибка создания process" << std::endl; 
+        exit(-1); 
+    }
+    if (pid == 0) { return IS_CHILD; }
+    return IS_PARENT;
+}
+
+void ProcessExecute(const char* program, const char* arg) {
+    execl(program, arg, NULL);
+    perror("execl");
+    exit(1);
+}
+
+pid_t ProcessWait(pid_t pid) {
+    int status;
+    return waitpid(pid, &status, 0);
+}
+
+void SemaphorePost(sem_t* sem) {
+    if (sem_post(sem) == -1) { perror("sem_post"); exit(1); }
+}
+
+void SemaphoreWait(sem_t* sem) {
+    if (sem_wait(sem) == -1) { perror("sem_wait"); exit(1); }
+}
+
+char* MapFileContent(const char* filename, size_t size, int flags) {
+    int fd = open(filename, flags, 0666);
+    if (fd == -1) {
+        perror("open for file mapping");
+        return nullptr;
+    }
+
+    if (ftruncate(fd, size) == -1 && (flags & O_CREAT)) {
+        close(fd);
+        perror("ftruncate");
+        return nullptr;
+    }
+
+    char* mapped_addr = (char*)mmap(NULL, size, 
+                        PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+
+    if (mapped_addr == MAP_FAILED) {
+        perror("mmap file content");
+        return nullptr;
+    }
+    return mapped_addr;
+}
+\end{lstlisting}
+
+\subsection{Основные программы}
+
+\subsubsection{parent.cpp - родительский процесс}
+\begin{lstlisting}[language=C++, basicstyle=\ttfamily\footnotesize]
+#include <iostream>
+#include <string>
+#include <cstring>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <cstdlib>
+
+#include "os.hpp"
+#include "shared_data.hpp"
+
+const size_t FILE_SIZE = 4096;
+const char* DATA_FILENAME = "data_to_process.txt";
+
+int main() {
+    SharedData* control_data = CreateSharedMemory();
+    strncpy(control_data->file, DATA_FILENAME, 
+            sizeof(control_data->file));
+    control_data->file[sizeof(control_data->file) - 1] = '\0';
+    
+    char* file_content = MapFileContent(DATA_FILENAME, FILE_SIZE, 
+                                        O_CREAT | O_RDWR);
+    if (!file_content) {
+        DestroySharedMemory(control_data);
+        return -1;
+    }
+    
+    std::string input_string;
+    std::cout << "Enter a string: ";
+    std::getline(std::cin, input_string);
+    
+    strncpy(file_content, input_string.c_str(), FILE_SIZE - 1);
+    file_content[FILE_SIZE - 1] = '\0';
+    
+    pid_t pid1 = 0;
+    if (ProcessCreate() == IS_CHILD) {
+        ProcessExecute("./child1", "child1");
+    }
+    pid1 = getpid(); 
+
+    pid_t pid2 = 0;
+    if (ProcessCreate() == IS_CHILD) {
+        ProcessExecute("./child2", "child2");
+    }
+    pid2 = getpid(); 
+    
+    SemaphorePost(control_data->sem_child); 
+    SemaphoreWait(control_data->sem_parent); 
+    
+    std::cout << "Final output: " << file_content << std::endl;
+    
+    munmap(file_content, FILE_SIZE);
+    unlink(DATA_FILENAME); 
+    
+    ProcessWait(pid1);
+    ProcessWait(pid2);
+    
+    DestroySharedMemory(control_data);
+    
+    return 0;
+}
+\end{lstlisting}
+
+\subsubsection{child1.cpp - первый дочерний процесс (преобразование в верхний регистр)}
+\begin{lstlisting}[language=C++, basicstyle=\ttfamily\footnotesize]
+#include <cctype>
+#include <cstring>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <cstdlib>
+
+#include "os.hpp"
+#include "shared_data.hpp"
+
+const size_t FILE_SIZE = 4096;
+
+int main() {
+    SharedData* control_data = OpenSharedMemory();
+    
+    SemaphoreWait(control_data->sem_child); 
+    SemaphoreWait(control_data->sem_file);
+    
+    char* file_content = MapFileContent(control_data->file, 
+                                        FILE_SIZE, O_RDWR);
+    if (!file_content) {
+        SemaphorePost(control_data->sem_file); 
+        return -1;
+    }
+    
+    size_t len = strlen(file_content);
+    for (size_t i = 0; i < len; ++i) {
+        file_content[i] = std::toupper(
+            static_cast<unsigned char>(file_content[i]));
+    }
+    
+    munmap(file_content, FILE_SIZE);
+    SemaphorePost(control_data->sem_file);
+    SemaphorePost(control_data->sem_child);
+    
+    munmap(control_data, sizeof(SharedData));
+    return 0;
+}
+\end{lstlisting}
+
+\subsubsection{child2.cpp - второй дочерний процесс (замена пробелов на подчеркивания)}
+\begin{lstlisting}[language=C++, basicstyle=\ttfamily\footnotesize]
+#include <cstring>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <cstdlib>
+
+#include "os.hpp"
+#include "shared_data.hpp"
+
+const size_t FILE_SIZE = 4096;
+
+int main() {
+    SharedData* control_data = OpenSharedMemory();
+    
+    SemaphoreWait(control_data->sem_child); 
+    SemaphoreWait(control_data->sem_file);
+    
+    char* file_content = MapFileContent(control_data->file, 
+                                        FILE_SIZE, O_RDWR);
+    if (!file_content) {
+        SemaphorePost(control_data->sem_file); 
+        return -1;
+    }
+    
+    size_t len = strlen(file_content);
+    for (size_t i = 0; i < len; ++i) {
+        if (file_content[i] == ' ') {
+            file_content[i] = '_';
+        }
+    }
+    
+    munmap(file_content, FILE_SIZE);
+    SemaphorePost(control_data->sem_file);
+    SemaphorePost(control_data->sem_parent);
+    
+    munmap(control_data, sizeof(SharedData));
+    return 0;
+}
+\end{lstlisting}
+
